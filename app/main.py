@@ -4,7 +4,6 @@ GitHub File API — fetch files and commit changes to GitHub repos.
 
 import base64
 import json
-import logging
 import os
 import yaml
 from typing import Optional
@@ -19,27 +18,13 @@ from ghapi.all import GhApi
 from fastcore.net import HTTP4xxClientError
 from pydantic import BaseModel, Field
 
-from app.catalog_resolver import CatalogResolver
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ── App setup ────────────────────────────────────────────────────────────────
-
 app = FastAPI(
-    title="GitHub File API",
-    description="Fetch files from GitHub repositories and return them as YAML",
-    version="1.0.0",
+    title="Repo API",
+    description="Fetch files from GitHub repositories and commit changes",
+    version="2.0.0",
 )
 
 security = HTTPBearer(auto_error=False)
-
-# ── Catalog config ───────────────────────────────────────────────────────────
-
-CATALOG_OWNER = os.getenv("CATALOG_OWNER", "rjones-projects")
-CATALOG_REPO  = os.getenv("CATALOG_REPO",  "catalog")
-CATALOG_FILE  = os.getenv("CATALOG_FILE",  "catalog.yaml")
-CATALOG_REF   = os.getenv("CATALOG_REF",   "HEAD")
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -58,23 +43,6 @@ class CommitResponse(BaseModel):
     branch: str
     commit_sha: str
     files_committed: list[str]
-
-
-class CatalogResolveRequest(BaseModel):
-    building_blocks: list[str] = Field(
-        ...,
-        min_length=1,
-        description="List of catalog building block names, e.g. ['bucket', 'sql', 'network']",
-    )
-    terraform_version: Optional[str] = Field("~> 1.9", description="Required Terraform version constraint")
-    backend: Optional[str] = Field(None, description="Backend type, e.g. 'gcs', 's3', 'azurerm'")
-    modules_ref: Optional[str] = Field("main", description="Git ref used to pin module sources")
-
-
-class CatalogResolveResponse(BaseModel):
-    main_tf: str
-    variables_tf: str
-    summary: dict
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -131,36 +99,11 @@ def _github_error(exc: HTTP4xxClientError, default_status: int = 404) -> HTTPExc
     return HTTPException(status_code=status, detail=msg)
 
 
-# ── Catalog helper ────────────────────────────────────────────────────────────
-
-def fetch_catalog(gh: GhApi) -> list:
-    try:
-        fc = gh.repos.get_content(
-            owner=CATALOG_OWNER, repo=CATALOG_REPO, path=CATALOG_FILE, ref=CATALOG_REF
-        )
-    except HTTP4xxClientError as exc:
-        raise HTTPException(
-            status_code=_http_status(exc) or 404,
-            detail=f"Catalog '{CATALOG_OWNER}/{CATALOG_REPO}/{CATALOG_FILE}' not found: {exc}",
-        )
-
-    raw_bytes = base64.b64decode(fc.content)
-    try:
-        documents = [d for d in yaml.safe_load_all(raw_bytes.decode("utf-8", errors="replace")) if d is not None]
-    except yaml.YAMLError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to parse catalog YAML: {exc}")
-
-    if not documents:
-        raise HTTPException(status_code=500, detail="Catalog file is empty or contains no valid documents")
-
-    return documents
-
-
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/", include_in_schema=False)
 def root():
-    return {"message": "GitHub File API — visit /docs for usage"}
+    return {"message": "Repo API — visit /docs for usage"}
 
 
 @app.get("/health")
@@ -168,44 +111,7 @@ def health():
     return {"status": "ok"}
 
 
-# ── Catalog endpoints ────────────────────────────────────────────────────────
-
-@app.get(
-    "/catalog",
-    summary="Return the full catalog as YAML",
-    response_class=Response,
-    responses={200: {"content": {"text/yaml": {}}}, 404: {"description": "Catalog repo or file not found"}},
-)
-def get_catalog(gh: GhApi = Depends(get_github_client)):
-    documents = fetch_catalog(gh)
-    yaml_str = yaml.dump_all(documents, allow_unicode=True, sort_keys=False, default_flow_style=False, explicit_start=True)
-    return Response(content=yaml_str, media_type="text/yaml; charset=utf-8")
-
-
-@app.get(
-    "/catalog/{index}",
-    summary="Return a single indexed item from the catalog",
-    response_class=Response,
-    responses={200: {"content": {"text/yaml": {}}}, 400: {"description": "Invalid index"}, 404: {"description": "Index out of range"}},
-)
-def get_catalog_item(index: str, gh: GhApi = Depends(get_github_client)):
-    documents = fetch_catalog(gh)
-    try:
-        i = int(index)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Index must be an integer, got '{index}'")
-
-    if i < 0 or i >= len(documents):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Index {i} out of range — catalog has {len(documents)} documents (0–{len(documents)-1})",
-        )
-
-    item = documents[i]
-    return to_yaml_response(item if isinstance(item, (dict, list)) else {"value": item})
-
-
-# ── Repo read endpoints ──────────────────────────────────────────────────────
+# ── Read endpoints ───────────────────────────────────────────────────────────
 
 @app.get(
     "/repos/{owner}/{repo}/file",
@@ -348,7 +254,6 @@ def _ensure_repo(gh: GhApi, owner: str, repo: str, private: bool) -> str:
         if _http_status(exc) != 404:
             raise _github_error(exc)
 
-    # Repo doesn't exist — create it under the owner (org or user)
     try:
         me = gh.users.get_authenticated()
         if me.login == owner:
@@ -390,27 +295,23 @@ def commit_files(
     default_branch = _ensure_repo(gh, owner, repo, request.private)
     branch = request.branch
 
-    # Get (or create) the branch ref
     try:
         ref_obj = gh.git.get_ref(owner=owner, repo=repo, ref=f"heads/{branch}")
         base_sha = ref_obj.object.sha
     except HTTP4xxClientError as exc:
         if _http_status(exc) != 404:
             raise _github_error(exc)
-        # Branch absent — fork from default branch
         default_ref = gh.git.get_ref(owner=owner, repo=repo, ref=f"heads/{default_branch}")
         base_sha = default_ref.object.sha
         gh.git.create_ref(owner=owner, repo=repo, ref=f"refs/heads/{branch}", sha=base_sha)
 
     base_tree_sha = gh.git.get_commit(owner=owner, repo=repo, commit_sha=base_sha).tree.sha
 
-    # Build one blob per file and collect tree entries
     tree_entries = []
     committed_paths = []
     folder_prefix = request.folder.rstrip("/") + "/" if request.folder else ""
 
     for file_path, content in request.files.items():
-        # Strip the source folder prefix if present
         rel = file_path[len(folder_prefix):] if folder_prefix and file_path.startswith(folder_prefix) else file_path
         dest = f"{request.destination.rstrip('/')}/{rel}" if request.destination else rel
         dest = dest.lstrip("/")
@@ -434,33 +335,3 @@ def commit_files(
         commit_sha=new_commit.sha,
         files_committed=committed_paths,
     )
-
-
-# ── Catalog resolve endpoint ─────────────────────────────────────────────────
-
-@app.post(
-    "/catalog/resolve",
-    response_model=CatalogResolveResponse,
-    summary="Resolve building blocks into Terraform files",
-    responses={502: {"description": "Failed to fetch catalog mapping or module variables from GitHub"}},
-)
-def resolve_catalog(request: CatalogResolveRequest):
-    """
-    Accepts building block names, resolves them to GCP Terraform modules,
-    and returns ready-to-use main.tf and variables.tf.
-    """
-    try:
-        resolver = CatalogResolver(
-            building_blocks=request.building_blocks,
-            terraform_version=request.terraform_version or "~> 1.9",
-            backend=request.backend,
-            modules_ref=request.modules_ref or "main",
-        )
-        return resolver.resolve()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:
-        logger.exception("Unexpected error during catalog resolution")
-        raise HTTPException(status_code=500, detail=str(exc))
