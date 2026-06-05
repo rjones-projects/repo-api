@@ -114,3 +114,21 @@ docker run -p 8080:8080 -e GITHUB_TOKEN=<token> repo-api
 | Variable | Description |
 |----------|-------------|
 | `GITHUB_TOKEN` | GitHub Personal Access Token (used as fallback when no token is passed per-request) |
+
+#added github variables for 
+CATALOG_OWNER=rjones-projects
+CATALOG_REPO=repo-api
+
+
+
+docker build -t repo-api .
+docker run -p 8080:8080 repo-api 
+
+docker tag repo-api europe-west2-docker.pkg.dev/idp-poc-495014/repo-api/repo-api:latest
+
+docker push europe-west2-docker.pkg.dev/idp-poc-495014/repo-api/repo-api:latest
+
+docker tag repo-api europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/repo-api/repo-api:latest
+
+docker push europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/repo-api/repo-api:latest
+
