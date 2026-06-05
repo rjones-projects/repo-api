@@ -53,5 +53,5 @@ jobs:
           region: ${{ env.REGION }}
           image: ${{ env.IMAGE }}:${{ github.sha }}
           flags: --allow-unauthenticated
-          env_vars: |
-            GH_TOKEN=${{ secrets.GH_TOKEN }}
+          secrets: |
+            GH_TOKEN=gh-token:latest

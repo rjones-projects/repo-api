@@ -155,6 +155,20 @@ CATALOG_OWNER=rjones-projects
 CATALOG_REPO=catalog
 CATALOG_FILE=catalog.yaml
 
+# ── GH_TOKEN via Secret Manager (one-time) ────────────────────────────────────
+# The Cloud Run service reads GH_TOKEN from Secret Manager (secret name: gh-token),
+# mounted as an env var by the deploy workflow (secrets: GH_TOKEN=gh-token:latest).
+
+# Create the secret and add the PAT as the first version (reads from stdin)
+gcloud secrets create gh-token --project=idp-poc-495014 --replication-policy=automatic
+'ghp_yourTokenHere' | gcloud secrets versions add gh-token --project=idp-poc-495014 --data-file=-
+
+# Grant the Cloud Run runtime service account read access to the secret
+gcloud secrets add-iam-policy-binding gh-token --project=idp-poc-495014 --role="roles/secretmanager.secretAccessor" --member="serviceAccount:$(gcloud projects describe idp-poc-495014 --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+
+# To rotate the token later, just add a new version (:latest picks it up on next deploy)
+printf '%s' 'ghp_newTokenHere' | gcloud secrets versions add gh-token --project=idp-poc-495014 --data-file=-
+
 
 
 docker build -t repo-api .
