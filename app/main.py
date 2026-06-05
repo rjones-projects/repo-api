@@ -13,9 +13,10 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.responses import Response
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from ghapi.all import GhApi
 from fastcore.net import HTTP4xxClientError
+from google.cloud import secretmanager
+from google.api_core.exceptions import GoogleAPIError
 from pydantic import BaseModel, Field
 
 app = FastAPI(
@@ -24,7 +25,17 @@ app = FastAPI(
     version="2.0.0",
 )
 
-security = HTTPBearer(auto_error=False)
+# GCP project that stores the per-owner GitHub PAT secrets (named "<owner>_token").
+SECRET_PROJECT = os.getenv("SECRET_PROJECT", "idp-poc-495014")
+
+_secret_client: Optional[secretmanager.SecretManagerServiceClient] = None
+
+
+def _secret_manager() -> secretmanager.SecretManagerServiceClient:
+    global _secret_client
+    if _secret_client is None:
+        _secret_client = secretmanager.SecretManagerServiceClient()
+    return _secret_client
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -47,16 +58,27 @@ class CommitResponse(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def get_github_client(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-) -> GhApi:
-    """Resolve GitHub token from the Authorization: Bearer header, or the GH_TOKEN env var."""
-    resolved_token = None
-    if credentials:
-        resolved_token = credentials.credentials
-    elif os.getenv("GH_TOKEN"):
-        resolved_token = os.getenv("GH_TOKEN")
-    return GhApi(token=resolved_token)
+def _resolve_owner_token(owner: str) -> Optional[str]:
+    """Fetch the GitHub PAT for an owner from Secret Manager (secret '<owner>_token').
+
+    Returns None when the owner has no secret, so callers fall back to
+    unauthenticated GitHub access.
+    """
+    name = f"projects/{SECRET_PROJECT}/secrets/{owner}_token/versions/latest"
+    try:
+        response = _secret_manager().access_secret_version(name=name)
+    except GoogleAPIError:
+        return None
+    return response.payload.data.decode("utf-8").strip()
+
+
+def get_github_client(owner: str) -> GhApi:
+    """Resolve the GitHub token from the Secret Manager secret named '<owner>_token'.
+
+    `owner` is bound to the {owner} path parameter of each route. When no secret
+    exists for the owner, GitHub calls are made unauthenticated.
+    """
+    return GhApi(token=_resolve_owner_token(owner))
 
 
 def decode_content(content_bytes: bytes, path: str) -> object:

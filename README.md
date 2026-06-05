@@ -16,15 +16,23 @@ Interactive docs: http://localhost:8080/docs
 
 ## Authentication
 
-Pass a GitHub Personal Access Token (PAT) via:
+The service resolves the GitHub Personal Access Token (PAT) **server-side**, per
+request, from Google Secret Manager. For a request to `/repos/{owner}/...` it
+reads the secret named `{owner}_token` (e.g. `octocat` → secret `octocat_token`)
+from project `idp-poc-495014` (override with the `SECRET_PROJECT` env var).
 
-- `Authorization: Bearer <token>` header
-- `GH_TOKEN` environment variable (fallback)
+If no secret exists for that owner, GitHub calls are made **unauthenticated**
+(subject to lower rate limits and no private-repo access).
 
-> The token is **never** accepted as a URL query parameter — query strings leak
-> into access logs, browser history, and proxy logs. Always send it as a header.
+> The token is **never** accepted from the client — no `Authorization` header and
+> no query parameter. This keeps PATs out of access logs, browser history, and
+> proxy logs, and centralizes credential management in Secret Manager.
 
-Scopes needed: `repo` for private repos, `public_repo` for public only.
+Scopes needed on each PAT: `repo` for private repos, `public_repo` for public only.
+
+> **Local dev:** the Secret Manager client uses Application Default Credentials —
+> run `gcloud auth application-default login` first, or the lookup returns nothing
+> and calls fall back to unauthenticated.
 
 ## Endpoints
 
@@ -108,14 +116,19 @@ Response:
 
 ```bash
 docker build -t repo-api .
-docker run -p 8080:8080 -e GH_TOKEN=<token> repo-api
+# Mount ADC so the container can read Secret Manager locally
+docker run -p 8080:8080 \
+  -e SECRET_PROJECT=idp-poc-495014 \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/adc.json \
+  -v $HOME/.config/gcloud/application_default_credentials.json:/adc.json:ro \
+  repo-api
 ```
 
 ## Environment variables
 
 | Variable | Description |
 |----------|-------------|
-| `GH_TOKEN` | GitHub Personal Access Token (used as fallback when no token is passed per-request) |
+| `SECRET_PROJECT` | GCP project holding the per-owner `{owner}_token` secrets (default: `idp-poc-495014`) |
 
 #added github variables for 
 CATALOG_OWNER=rjones-projects
@@ -155,19 +168,27 @@ CATALOG_OWNER=rjones-projects
 CATALOG_REPO=catalog
 CATALOG_FILE=catalog.yaml
 
-# ── GH_TOKEN via Secret Manager (one-time) ────────────────────────────────────
-# The Cloud Run service reads GH_TOKEN from Secret Manager (secret name: gh-token),
-# mounted as an env var by the deploy workflow (secrets: GH_TOKEN=gh-token:latest).
+# ── Per-owner GitHub PATs via Secret Manager ──────────────────────────────────
+# At request time the service reads the secret "<owner>_token" from idp-poc-495014,
+# where <owner> is the {owner} in /repos/{owner}/... . Create one secret per GitHub
+# owner/org you want authenticated access to (example owner: octocat).
 
 # Create the secret and add the PAT as the first version (reads from stdin)
-gcloud secrets create gh-token --project=idp-poc-495014 --replication-policy=automatic
-'ghp_yourTokenHere' | gcloud secrets versions add gh-token --project=idp-poc-495014 --data-file=-
+gcloud secrets create octocat_token --project=idp-poc-495014 --replication-policy=automatic
+printf '%s' 'ghp_yourTokenHere' | gcloud secrets versions add octocat_token --project=idp-poc-495014 --data-file=-
 
-# Grant the Cloud Run runtime service account read access to the secret
-gcloud secrets add-iam-policy-binding gh-token --project=idp-poc-495014 --role="roles/secretmanager.secretAccessor" --member="serviceAccount:$(gcloud projects describe idp-poc-495014 --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+# Grant the Cloud Run runtime service account read access. Project-level grant lets
+# it read every <owner>_token without re-binding for each new owner:
+gcloud projects add-iam-policy-binding idp-poc-495014 --role="roles/secretmanager.secretAccessor" --member="serviceAccount:$(gcloud projects describe idp-poc-495014 --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
 
-# To rotate the token later, just add a new version (:latest picks it up on next deploy)
-printf '%s' 'ghp_newTokenHere' | gcloud secrets versions add gh-token --project=idp-poc-495014 --data-file=-
+# (Tighter alternative — grant per secret instead of project-wide:)
+# gcloud secrets add-iam-policy-binding octocat_token --project=idp-poc-495014 --role="roles/secretmanager.secretAccessor" --member="serviceAccount:$(gcloud projects describe idp-poc-495014 --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+
+# If a prior deploy left GH_TOKEN as a literal env var on the service, clear it once
+gcloud run services update repo-api --project=idp-poc-495014 --region=europe-west2 --remove-env-vars=GH_TOKEN
+
+# Rotate a token by adding a new version (the service reads :latest on each request)
+printf '%s' 'ghp_newTokenHere' | gcloud secrets versions add octocat_token --project=idp-poc-495014 --data-file=-
 
 
 
