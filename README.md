@@ -1,6 +1,6 @@
 # Repo API
 
-A lightweight FastAPI service for reading files from and committing files to GitHub repositories.
+A lightweight FastAPI service for reading files from and committing files to GitHub repositories. Used by IDP
 
 ## Setup
 
