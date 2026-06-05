@@ -50,12 +50,12 @@ class CommitResponse(BaseModel):
 def get_github_client(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> GhApi:
-    """Resolve GitHub token from the Authorization: Bearer header, or the GITHUB_TOKEN env var."""
+    """Resolve GitHub token from the Authorization: Bearer header, or the GH_TOKEN env var."""
     resolved_token = None
     if credentials:
         resolved_token = credentials.credentials
-    elif os.getenv("GITHUB_TOKEN"):
-        resolved_token = os.getenv("GITHUB_TOKEN")
+    elif os.getenv("GH_TOKEN"):
+        resolved_token = os.getenv("GH_TOKEN")
     return GhApi(token=resolved_token)
 
 

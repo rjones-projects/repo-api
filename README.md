@@ -8,7 +8,7 @@ A lightweight FastAPI service for reading files from and committing files to Git
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env       # add your GITHUB_TOKEN
+cp .env.example .env       # add your GH_TOKEN
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
@@ -19,7 +19,7 @@ Interactive docs: http://localhost:8080/docs
 Pass a GitHub Personal Access Token (PAT) via:
 
 - `Authorization: Bearer <token>` header
-- `GITHUB_TOKEN` environment variable (fallback)
+- `GH_TOKEN` environment variable (fallback)
 
 > The token is **never** accepted as a URL query parameter — query strings leak
 > into access logs, browser history, and proxy logs. Always send it as a header.
@@ -108,14 +108,14 @@ Response:
 
 ```bash
 docker build -t repo-api .
-docker run -p 8080:8080 -e GITHUB_TOKEN=<token> repo-api
+docker run -p 8080:8080 -e GH_TOKEN=<token> repo-api
 ```
 
 ## Environment variables
 
 | Variable | Description |
 |----------|-------------|
-| `GITHUB_TOKEN` | GitHub Personal Access Token (used as fallback when no token is passed per-request) |
+| `GH_TOKEN` | GitHub Personal Access Token (used as fallback when no token is passed per-request) |
 
 #added github variables for 
 CATALOG_OWNER=rjones-projects
