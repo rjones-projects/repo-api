@@ -5,6 +5,7 @@ GitHub File API — fetch files and commit changes to GitHub repos.
 import base64
 import json
 import os
+import time
 import yaml
 from typing import Optional
 
@@ -28,7 +29,16 @@ app = FastAPI(
 # GCP project that stores the per-owner GitHub PAT secrets (named "<owner>_token").
 SECRET_PROJECT = os.getenv("SECRET_PROJECT", "idp-poc-495014")
 
+# How long (seconds) a resolved token is cached in memory before it is re-read
+# from Secret Manager. Bounds how long a rotation (or a newly added secret) takes
+# to take effect. Set TOKEN_CACHE_TTL=0 to disable caching.
+TOKEN_CACHE_TTL = int(os.getenv("TOKEN_CACHE_TTL", "300"))
+
 _secret_client: Optional[secretmanager.SecretManagerServiceClient] = None
+
+# owner -> (token_or_None, expires_at_monotonic). None values are cached too, so a
+# missing secret doesn't trigger a Secret Manager call on every request.
+_token_cache: dict[str, tuple[Optional[str], float]] = {}
 
 
 def _secret_manager() -> secretmanager.SecretManagerServiceClient:
@@ -58,8 +68,8 @@ class CommitResponse(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _resolve_owner_token(owner: str) -> Optional[str]:
-    """Fetch the GitHub PAT for an owner from Secret Manager (secret '<owner>_token').
+def _fetch_owner_token(owner: str) -> Optional[str]:
+    """Read the GitHub PAT for an owner from Secret Manager (secret '<owner>_token').
 
     Returns None when the owner has no secret, so callers fall back to
     unauthenticated GitHub access.
@@ -70,6 +80,21 @@ def _resolve_owner_token(owner: str) -> Optional[str]:
     except GoogleAPIError:
         return None
     return response.payload.data.decode("utf-8").strip()
+
+
+def _resolve_owner_token(owner: str) -> Optional[str]:
+    """Return the owner's token, served from an in-memory TTL cache when fresh."""
+    if TOKEN_CACHE_TTL <= 0:
+        return _fetch_owner_token(owner)
+
+    now = time.monotonic()
+    cached = _token_cache.get(owner)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    token = _fetch_owner_token(owner)
+    _token_cache[owner] = (token, now + TOKEN_CACHE_TTL)
+    return token
 
 
 def get_github_client(owner: str) -> GhApi:

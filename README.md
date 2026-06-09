@@ -129,6 +129,7 @@ docker run -p 8080:8080 \
 | Variable | Description |
 |----------|-------------|
 | `SECRET_PROJECT` | GCP project holding the per-owner `{owner}_token` secrets (default: `idp-poc-495014`) |
+| `TOKEN_CACHE_TTL` | Seconds a resolved token is cached in memory before re-reading Secret Manager (default: `300`; `0` disables) |
 
 #added github variables for 
 CATALOG_OWNER=rjones-projects
@@ -187,7 +188,7 @@ gcloud projects add-iam-policy-binding idp-poc-495014 --role="roles/secretmanage
 # If a prior deploy left GH_TOKEN as a literal env var on the service, clear it once
 gcloud run services update repo-api --project=idp-poc-495014 --region=europe-west2 --remove-env-vars=GH_TOKEN
 
-# Rotate a token by adding a new version (the service reads :latest on each request)
+# Rotate a token by adding a new version (picked up within TOKEN_CACHE_TTL, default 5m)
 printf '%s' 'ghp_newTokenHere' | gcloud secrets versions add octocat_token --project=idp-poc-495014 --data-file=-
 
 
