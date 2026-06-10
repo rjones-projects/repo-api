@@ -128,19 +128,50 @@ def to_yaml_response(data: dict) -> Response:
 
 
 def _http_status(exc: HTTP4xxClientError) -> int:
-    if hasattr(exc, "response") and exc.response is not None:
-        return exc.response.status_code
+    # fastcore's HTTP errors subclass urllib.error.HTTPError, which exposes the
+    # status as `.code`. Fall back to other common attributes just in case.
+    for attr in ("code", "status", "status_code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    if response is not None:
+        return getattr(response, "status_code", 0) or 0
     return 0
+
+
+def _error_message(exc: HTTP4xxClientError) -> str:
+    """Extract GitHub's JSON error message from a fastcore HTTP exception.
+
+    fastcore appends the raw response body to the exception text after an
+    '====Error Body====' marker, so we parse that to surface GitHub's own
+    "message" (plus any field-level "errors") instead of a generic string.
+    """
+    text = str(exc)
+    body = text.split("====Error Body====", 1)[-1].strip()
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        # No parseable body — return the status line without the body marker noise.
+        return text.split("====Error Body====", 1)[0].strip() or text
+
+    if not isinstance(data, dict):
+        return text
+    message = data.get("message") or text
+    errors = data.get("errors")
+    if isinstance(errors, list) and errors:
+        details = "; ".join(
+            e.get("message") or " ".join(filter(None, (e.get("field"), e.get("code"))))
+            for e in errors if isinstance(e, dict)
+        ).strip("; ")
+        if details:
+            message = f"{message}: {details}"
+    return message
 
 
 def _github_error(exc: HTTP4xxClientError, default_status: int = 404) -> HTTPException:
     status = _http_status(exc) or default_status
-    msg = str(exc)
-    try:
-        msg = json.loads(msg).get("message", msg)
-    except Exception:
-        pass
-    return HTTPException(status_code=status, detail=msg)
+    return HTTPException(status_code=status, detail=_error_message(exc))
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
