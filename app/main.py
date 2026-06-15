@@ -69,6 +69,7 @@ class CommitResponse(BaseModel):
     pull_request_url: Optional[str] = None
     workflow_path: Optional[str] = None
     modules_secret_set: bool = False
+    modules_secret_error: Optional[str] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -497,13 +498,16 @@ def _bootstrap_new_repo(
     # Inject the owner PAT so the plan workflow can fetch private Terraform modules.
     # Must happen before the PR is opened (which triggers the workflow run).
     modules_secret_set = False
+    modules_secret_error = None
     token = _resolve_owner_token(owner)
     if token:
         try:
             _set_repo_secret(gh, owner, repo, "GH_MODULES_TOKEN", token)
             modules_secret_set = True
-        except HTTP4xxClientError:
-            modules_secret_set = False
+        except HTTP4xxClientError as exc:
+            modules_secret_error = f"{_http_status(exc)}: {_error_message(exc)}"
+    else:
+        modules_secret_error = f"no PAT found in Secret Manager for owner '{owner}' (secret '{owner}_token')"
 
     tf_dir = request.destination.strip("/") or "."
     workflow_path = ".github/workflows/terraform-plan.yml"
@@ -538,6 +542,7 @@ def _bootstrap_new_repo(
         pull_request_url=pr.html_url,
         workflow_path=workflow_path,
         modules_secret_set=modules_secret_set,
+        modules_secret_error=modules_secret_error,
     )
 
 
