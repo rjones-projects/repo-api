@@ -142,6 +142,14 @@ Response (newly created repo):
 > The PAT therefore needs `repo` scope, and the repo/org must allow Actions to
 > have `pull-requests: write` for the plan comment to post.
 
+> **Terraform state:** the plan workflow uses the **local backend**
+> (`terraform init -input=false`) and persists `terraform.tfstate` across runs with
+> `actions/cache` — a unique key per run (always saves) plus a `restore-keys` prefix
+> (restores the latest prior state). Note: `terraform plan` alone doesn't write
+> state; the cached file only becomes meaningful once an `apply` step exists. Cache
+> entries are also branch-scoped and evicted after 7 days / 10 GB, so for durable
+> shared state prefer a remote backend (GCS) over the local-backend + cache demo setup.
+
 > **Private Terraform modules:** `terraform init` clones module sources from
 > github.com. The built-in `GITHUB_TOKEN` can't read *other* private repos, so on
 > repo creation the owner's PAT is injected as a `GH_MODULES_TOKEN` Actions secret

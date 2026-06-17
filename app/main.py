@@ -363,9 +363,19 @@ jobs:
           git config --global url."https://x-access-token:${GH_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
           git config --global url."https://x-access-token:${GH_MODULES_TOKEN}@github.com/".insteadOf "git@github.com:"
 
+      - name: Cache Terraform state
+        uses: actions/cache@v4
+        with:
+          path: |
+            __TF_DIR__/terraform.tfstate
+            __TF_DIR__/terraform.tfstate.backup
+          key: terraform-state-${{ github.run_id }}
+          restore-keys: |
+            terraform-state-
+
       - name: Terraform Init
         id: init
-        run: terraform init -backend=false -input=false
+        run: terraform init -input=false
         continue-on-error: true
 
       - name: Terraform Validate
