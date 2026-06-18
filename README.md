@@ -133,9 +133,24 @@ Response (newly created repo):
   "created_repo": true,
   "pull_request_url": "https://github.com/owner/IDP-demo-xyz/pull/1",
   "workflow_path": ".github/workflows/terraform-plan.yml",
-  "modules_secret_set": true
+  "modules_secret_set": true,
+  "modules_secret_error": null,
+  "wif_secrets_set": true,
+  "wif_secrets_error": null
 }
 ```
+
+New-repo bootstrap also injects a `providers.tf` (root `google` / `google-beta`
+blocks, using `gcp_project`/`gcp_region` from the request) so the generated TF has
+a provider configuration, and authenticates the plan to GCP via Workload Identity
+Federation. The WIF config is read from per-owner Secret Manager secrets
+`{owner}_wif_provider` / `{owner}_wif_service_account` (falling back to the
+`WIF_PROVIDER` / `WIF_SERVICE_ACCOUNT` env vars) and injected as repo secrets.
+
+> **WIF prerequisite:** the Workload Identity provider's attribute-condition must
+> authorize the generated repos (e.g. allow `rjones-projects/IDP-demo-*`, not just a
+> single repo), and the service account needs the roles to plan the target
+> resources. If `wif_secrets_set` is `false`, see `wif_secrets_error`.
 
 > The plan-on-PR workflow runs because the branch push and PR are made with the
 > owner's **PAT** (a push using the built-in `GITHUB_TOKEN` would not trigger it).

@@ -58,6 +58,8 @@ class CommitRequest(BaseModel):
     destination: str = Field("", description="Target folder path in the repo")
     branch: str = Field("main", description="Branch to commit to (created from default branch if absent)")
     private: bool = Field(False, description="Make the repo private when auto-creating it")
+    gcp_project: str = Field("", description="GCP project for the generated providers.tf (new repos)")
+    gcp_region: str = Field("europe-west2", description="GCP region for the generated providers.tf (new repos)")
 
 
 class CommitResponse(BaseModel):
@@ -70,6 +72,8 @@ class CommitResponse(BaseModel):
     workflow_path: Optional[str] = None
     modules_secret_set: bool = False
     modules_secret_error: Optional[str] = None
+    wif_secrets_set: bool = False
+    wif_secrets_error: Optional[str] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -86,6 +90,21 @@ def _fetch_owner_token(owner: str) -> Optional[str]:
     except GoogleAPIError:
         return None
     return response.payload.data.decode("utf-8").strip()
+
+
+def _fetch_owner_secret(owner: str, suffix: str) -> Optional[str]:
+    """Read an arbitrary per-owner secret '<owner>_<suffix>' from Secret Manager."""
+    name = f"projects/{SECRET_PROJECT}/secrets/{owner}_{suffix}/versions/latest"
+    try:
+        response = _secret_manager().access_secret_version(name=name)
+    except GoogleAPIError:
+        return None
+    return response.payload.data.decode("utf-8").strip()
+
+
+def _resolve_config(owner: str, suffix: str, env_var: str) -> Optional[str]:
+    """Resolve a config value from the per-owner secret '<owner>_<suffix>', then env."""
+    return _fetch_owner_secret(owner, suffix) or os.getenv(env_var)
 
 
 def _resolve_owner_token(owner: str) -> Optional[str]:
@@ -342,6 +361,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write  # required for Workload Identity Federation
 
 jobs:
   plan:
@@ -362,6 +382,12 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_MODULES_TOKEN}@github.com/".insteadOf "https://github.com/"
           git config --global url."https://x-access-token:${GH_MODULES_TOKEN}@github.com/".insteadOf "git@github.com:"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
 
       - name: Cache Terraform state
         uses: actions/cache@v4
@@ -419,6 +445,24 @@ jobs:
               body,
             });
 """
+
+
+def _providers_tf(project: str, region: str) -> str:
+    """Root google / google-beta provider blocks for the generated repo.
+
+    Credentials come from the workflow's Workload Identity Federation step (ADC),
+    so only project/region are set here.
+    """
+    lines = []
+    for name in ("google", "google-beta"):
+        lines.append(f'provider "{name}" {{')
+        if project:
+            lines.append(f'  project = "{project}"')
+        if region:
+            lines.append(f'  region  = "{region}"')
+        lines.append("}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _ensure_repo(gh: GhApi, owner: str, repo: str, private: bool) -> tuple[str, bool]:
@@ -519,10 +563,33 @@ def _bootstrap_new_repo(
     else:
         modules_secret_error = f"no PAT found in Secret Manager for owner '{owner}' (secret '{owner}_token')"
 
+    # Inject Workload Identity Federation config so the plan workflow can auth to GCP.
+    wif_secrets_set = False
+    wif_secrets_error = None
+    wif_provider = _resolve_config(owner, "wif_provider", "WIF_PROVIDER")
+    wif_sa = _resolve_config(owner, "wif_service_account", "WIF_SERVICE_ACCOUNT")
+    if wif_provider and wif_sa:
+        try:
+            _set_repo_secret(gh, owner, repo, "WIF_PROVIDER", wif_provider)
+            _set_repo_secret(gh, owner, repo, "WIF_SERVICE_ACCOUNT", wif_sa)
+            wif_secrets_set = True
+        except HTTP4xxClientError as exc:
+            wif_secrets_error = f"{_http_status(exc)}: {_error_message(exc)}"
+    else:
+        missing = ", ".join(
+            n for n, v in (("WIF_PROVIDER", wif_provider), ("WIF_SERVICE_ACCOUNT", wif_sa)) if not v
+        )
+        wif_secrets_error = (
+            f"missing {missing} — set per-owner secrets '{owner}_wif_provider'/"
+            f"'{owner}_wif_service_account' or the WIF_PROVIDER/WIF_SERVICE_ACCOUNT env vars"
+        )
+
     tf_dir = request.destination.strip("/") or "."
     workflow_path = ".github/workflows/terraform-plan.yml"
+    providers_path = "providers.tf" if tf_dir == "." else f"{tf_dir}/providers.tf"
     payload = dict(files)
     payload[workflow_path] = _TERRAFORM_PLAN_WORKFLOW.replace("__TF_DIR__", tf_dir)
+    payload[providers_path] = _providers_tf(request.gcp_project, request.gcp_region)
 
     commit_sha = _commit_tree(gh, owner, repo, base_sha, payload, request.message)
     gh.git.update_ref(owner=owner, repo=repo, ref=f"heads/{FIRST_COMMIT_BRANCH}", sha=commit_sha)
@@ -553,6 +620,8 @@ def _bootstrap_new_repo(
         workflow_path=workflow_path,
         modules_secret_set=modules_secret_set,
         modules_secret_error=modules_secret_error,
+        wif_secrets_set=wif_secrets_set,
+        wif_secrets_error=wif_secrets_error,
     )
 
 
