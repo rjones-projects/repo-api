@@ -23,7 +23,7 @@ short-lived JWT with the App's private key, looks up the App's installation on
 it expires).
 
 The private key (PEM) is read from the Secret Manager secret
-`github_app_private_key` in project `idp-poc-495014` (override with
+`GH-APP-PRIVATE-KEY` in project `idp-poc-495014` (override with
 `SECRET_PROJECT` / `GITHUB_APP_KEY_SECRET`). For local dev you can instead set
 `GITHUB_APP_PRIVATE_KEY`.
 
@@ -199,7 +199,7 @@ docker run -p 8080:8080 \
 | `SECRET_PROJECT` | GCP project holding the App key / config secrets (default: `idp-poc-495014`) |
 | `GITHUB_APP_ID` | GitHub App ID (`5146247`); set by the deploy workflow from the `GH_APP_ID` Actions secret |
 | `GITHUB_APP_CLIENT_ID` | GitHub App Client ID (`Iv23li6by46X2HFVrY6l`); set from the `GH_APP_CLIENT_ID` Actions secret |
-| `GITHUB_APP_KEY_SECRET` | Secret Manager secret with the App private key (default: `github_app_private_key`) |
+| `GITHUB_APP_KEY_SECRET` | Secret Manager secret with the App private key (default: `GH-APP-PRIVATE-KEY`) |
 | `GITHUB_APP_PRIVATE_KEY` | Local-dev fallback PEM when the secret is unavailable |
 
 #added github variables for 

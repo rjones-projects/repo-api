@@ -37,7 +37,7 @@ SECRET_PROJECT = os.getenv("SECRET_PROJECT", "idp-poc-495014")
 GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
 GITHUB_APP_CLIENT_ID = os.getenv("GITHUB_APP_CLIENT_ID", "")
 # Secret Manager secret holding the App's PEM private key (env var is a local-dev fallback).
-GITHUB_APP_KEY_SECRET = os.getenv("GITHUB_APP_KEY_SECRET", "github_app_private_key")
+GITHUB_APP_KEY_SECRET = os.getenv("GITHUB_APP_KEY_SECRET", "GH-APP-PRIVATE-KEY")
 
 # Installation tokens are refreshed this many seconds before GitHub says they expire.
 TOKEN_EXPIRY_SKEW = 60
@@ -160,7 +160,9 @@ def get_github_client(owner: str) -> GhApi:
     `owner` is bound to the {owner} path parameter of each route. When the App
     isn't installed on the owner, GitHub calls are made unauthenticated.
     """
-    return GhApi(token=_resolve_owner_token(owner))
+    token = _resolve_owner_token(owner)
+    # authenticate=False stops ghapi falling back to a stray GITHUB_TOKEN env var.
+    return GhApi(token=token) if token else GhApi(authenticate=False)
 
 
 def decode_content(content_bytes: bytes, path: str) -> object:
