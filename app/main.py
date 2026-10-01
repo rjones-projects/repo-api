@@ -186,6 +186,12 @@ def to_yaml_response(data: dict) -> Response:
     return Response(content=yaml_str, media_type="text/yaml; charset=utf-8")
 
 
+def _is_listing(result: object) -> bool:
+    """True for a directory listing. ghapi returns a fastcore `L` (not a `list`) for
+    arrays and an AttrDict (a `dict`) for single objects, so test for the latter."""
+    return not isinstance(result, dict)
+
+
 def _http_status(exc: HTTP4xxClientError) -> int:
     # fastcore's HTTP errors subclass urllib.error.HTTPError, which exposes the
     # status as `.code`. Fall back to other common attributes just in case.
@@ -266,7 +272,7 @@ def get_file(
     except HTTP4xxClientError as exc:
         raise _github_error(exc)
 
-    if isinstance(fc, list):
+    if _is_listing(fc):
         raise HTTPException(status_code=400, detail="Path points to a directory — use /tree endpoint instead")
 
     raw_bytes = base64.b64decode(fc.content)
@@ -304,7 +310,7 @@ def get_tree(
     except HTTP4xxClientError as exc:
         raise _github_error(exc)
 
-    if not isinstance(contents, list):
+    if not _is_listing(contents):
         contents = [contents]
 
     items = sorted(
@@ -332,7 +338,7 @@ def get_multiple_files(
     for file_path in paths:
         try:
             fc = gh.repos.get_content(owner=owner, repo=repo, path=file_path, ref=ref)
-            if isinstance(fc, list):
+            if _is_listing(fc):
                 results[file_path] = {"error": "path is a directory"}
                 continue
             raw_bytes = base64.b64decode(fc.content)
