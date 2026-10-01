@@ -7,6 +7,7 @@ import json
 import os
 import time
 import yaml
+from datetime import datetime, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -14,6 +15,7 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.responses import Response
+import jwt
 from ghapi.all import GhApi
 from fastcore.net import HTTP4xxClientError
 from google.cloud import secretmanager
@@ -27,19 +29,23 @@ app = FastAPI(
     version="2.1.0",
 )
 
-# GCP project that stores the per-owner GitHub PAT secrets (named "<owner>_token").
+# GCP project that stores the GitHub App private key and per-owner config secrets.
 SECRET_PROJECT = os.getenv("SECRET_PROJECT", "idp-poc-495014")
 
-# How long (seconds) a resolved token is cached in memory before it is re-read
-# from Secret Manager. Bounds how long a rotation (or a newly added secret) takes
-# to take effect. Set TOKEN_CACHE_TTL=0 to disable caching.
-TOKEN_CACHE_TTL = int(os.getenv("TOKEN_CACHE_TTL", "300"))
+# GitHub App used to authenticate to GitHub (owned by rjones-projects).
+GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "5145695")
+# Secret Manager secret holding the App's PEM private key (env var is a local-dev fallback).
+GITHUB_APP_KEY_SECRET = os.getenv("GITHUB_APP_KEY_SECRET", "github_app_private_key")
+
+# Installation tokens are refreshed this many seconds before GitHub says they expire.
+TOKEN_EXPIRY_SKEW = 60
 
 _secret_client: Optional[secretmanager.SecretManagerServiceClient] = None
 
-# owner -> (token_or_None, expires_at_monotonic). None values are cached too, so a
-# missing secret doesn't trigger a Secret Manager call on every request.
+# owner -> (installation_token_or_None, valid_until_epoch). None values are cached
+# briefly too, so an owner without the App installed doesn't hit GitHub on every request.
 _token_cache: dict[str, tuple[Optional[str], float]] = {}
+_NEGATIVE_CACHE_TTL = 60
 
 
 def _secret_manager() -> secretmanager.SecretManagerServiceClient:
@@ -78,18 +84,45 @@ class CommitResponse(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _fetch_owner_token(owner: str) -> Optional[str]:
-    """Read the GitHub PAT for an owner from Secret Manager (secret '<owner>_token').
-
-    Returns None when the owner has no secret, so callers fall back to
-    unauthenticated GitHub access.
-    """
-    name = f"projects/{SECRET_PROJECT}/secrets/{owner}_token/versions/latest"
+def _app_private_key() -> Optional[str]:
+    """Return the GitHub App private key (PEM) from Secret Manager, else the env var."""
+    name = f"projects/{SECRET_PROJECT}/secrets/{GITHUB_APP_KEY_SECRET}/versions/latest"
     try:
-        response = _secret_manager().access_secret_version(name=name)
+        key = _secret_manager().access_secret_version(name=name).payload.data.decode("utf-8")
     except GoogleAPIError:
+        key = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
+    return key.replace("\\n", "\n").strip() or None
+
+
+def _app_jwt() -> Optional[str]:
+    """Short-lived JWT identifying the App itself (used to mint installation tokens)."""
+    key = _app_private_key()
+    if not key:
         return None
-    return response.payload.data.decode("utf-8").strip()
+    now = int(time.time())
+    # iat backdated 60s to tolerate clock drift; GitHub allows at most 10 minutes of validity.
+    return jwt.encode({"iat": now - 60, "exp": now + 540, "iss": GITHUB_APP_ID}, key, algorithm="RS256")
+
+
+def _fetch_installation_token(owner: str) -> tuple[Optional[str], float]:
+    """Mint an installation access token for the account `owner`.
+
+    Returns (token, valid_until_epoch); token is None when the App has no
+    credentials configured or isn't installed on `owner`.
+    """
+    app_jwt = _app_jwt()
+    if not app_jwt:
+        return None, time.time() + _NEGATIVE_CACHE_TTL
+    app_gh = GhApi(token=app_jwt)
+    try:
+        installation = app_gh.apps.get_user_installation(username=owner)  # works for users and orgs
+        result = app_gh.apps.create_installation_access_token(installation_id=installation.id)
+    except HTTP4xxClientError as exc:
+        if _http_status(exc) == 404:  # App not installed on this owner
+            return None, time.time() + _NEGATIVE_CACHE_TTL
+        raise _github_error(exc)
+    expires = datetime.fromisoformat(result.expires_at.replace("Z", "+00:00"))
+    return result.token, expires.astimezone(timezone.utc).timestamp() - TOKEN_EXPIRY_SKEW
 
 
 def _fetch_owner_secret(owner: str, suffix: str) -> Optional[str]:
@@ -108,25 +141,21 @@ def _resolve_config(owner: str, suffix: str, env_var: str) -> Optional[str]:
 
 
 def _resolve_owner_token(owner: str) -> Optional[str]:
-    """Return the owner's token, served from an in-memory TTL cache when fresh."""
-    if TOKEN_CACHE_TTL <= 0:
-        return _fetch_owner_token(owner)
-
-    now = time.monotonic()
+    """Return a GitHub App installation token for the owner, cached until near expiry."""
     cached = _token_cache.get(owner)
-    if cached is not None and cached[1] > now:
+    if cached is not None and cached[1] > time.time():
         return cached[0]
 
-    token = _fetch_owner_token(owner)
-    _token_cache[owner] = (token, now + TOKEN_CACHE_TTL)
+    token, valid_until = _fetch_installation_token(owner)
+    _token_cache[owner] = (token, valid_until)
     return token
 
 
 def get_github_client(owner: str) -> GhApi:
-    """Resolve the GitHub token from the Secret Manager secret named '<owner>_token'.
+    """Authenticate as the GitHub App installation on '<owner>'.
 
-    `owner` is bound to the {owner} path parameter of each route. When no secret
-    exists for the owner, GitHub calls are made unauthenticated.
+    `owner` is bound to the {owner} path parameter of each route. When the App
+    isn't installed on the owner, GitHub calls are made unauthenticated.
     """
     return GhApi(token=_resolve_owner_token(owner))
 
@@ -473,12 +502,16 @@ def _ensure_repo(gh: GhApi, owner: str, repo: str, private: bool) -> tuple[str, 
         if _http_status(exc) != 404:
             raise _github_error(exc)
 
+    # Installation tokens can't act as a user, so repos can only be created in orgs.
     try:
-        me = gh.users.get_authenticated()
-        if me.login == owner:
-            r = gh.repos.create_for_authenticated_user(name=repo, private=private, auto_init=True)
-        else:
-            r = gh.repos.create_in_org(org=owner, name=repo, private=private, auto_init=True)
+        account = gh.users.get_by_username(username=owner)
+        if account.type != "Organization":
+            raise HTTPException(
+                status_code=422,
+                detail=f"Cannot create repo '{repo}': GitHub Apps can only create repos in organizations, "
+                       f"and '{owner}' is a user account. Create the repo first.",
+            )
+        r = gh.repos.create_in_org(org=owner, name=repo, private=private, auto_init=True)
     except HTTP4xxClientError as exc:
         raise _github_error(exc, default_status=422)
 
@@ -549,7 +582,7 @@ def _bootstrap_new_repo(
         if _http_status(exc) != 422:  # 422 = ref already exists
             raise _github_error(exc)
 
-    # Inject the owner PAT so the plan workflow can fetch private Terraform modules.
+    # Inject an installation token so the plan workflow can fetch private Terraform modules.
     # Must happen before the PR is opened (which triggers the workflow run).
     modules_secret_set = False
     modules_secret_error = None
@@ -561,7 +594,7 @@ def _bootstrap_new_repo(
         except HTTP4xxClientError as exc:
             modules_secret_error = f"{_http_status(exc)}: {_error_message(exc)}"
     else:
-        modules_secret_error = f"no PAT found in Secret Manager for owner '{owner}' (secret '{owner}_token')"
+        modules_secret_error = f"GitHub App {GITHUB_APP_ID} is not installed on '{owner}' or has no private key configured"
 
     # Inject Workload Identity Federation config so the plan workflow can auth to GCP.
     wif_secrets_set = False

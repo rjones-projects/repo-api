@@ -8,7 +8,7 @@ A lightweight FastAPI service for reading files from and committing files to Git
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env       # add your GH_TOKEN
+# set GITHUB_APP_PRIVATE_KEY in .env (or use Secret Manager)
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
@@ -16,23 +16,31 @@ Interactive docs: http://localhost:8080/docs
 
 ## Authentication
 
-The service resolves the GitHub Personal Access Token (PAT) **server-side**, per
-request, from Google Secret Manager. For a request to `/repos/{owner}/...` it
-reads the secret named `{owner}_token` (e.g. `octocat` → secret `octocat_token`)
-from project `idp-poc-495014` (override with the `SECRET_PROJECT` env var).
+The service authenticates to GitHub as a **GitHub App** (App ID `5145695`,
+override with `GITHUB_APP_ID`). Per request for `/repos/{owner}/...` it signs a
+short-lived JWT with the App's private key, looks up the App's installation on
+`{owner}`, and mints an installation access token (cached until ~1 minute before
+it expires).
 
-If no secret exists for that owner, GitHub calls are made **unauthenticated**
-(subject to lower rate limits and no private-repo access).
+The private key (PEM) is read from the Secret Manager secret
+`github_app_private_key` in project `idp-poc-495014` (override with
+`SECRET_PROJECT` / `GITHUB_APP_KEY_SECRET`). For local dev you can instead set
+`GITHUB_APP_PRIVATE_KEY`.
 
-> The token is **never** accepted from the client — no `Authorization` header and
-> no query parameter. This keeps PATs out of access logs, browser history, and
-> proxy logs, and centralizes credential management in Secret Manager.
+If the App isn't installed on that owner (or no key is configured), GitHub calls
+are made **unauthenticated** (lower rate limits, no private-repo access).
 
-Scopes needed on each PAT: `repo` for private repos, `public_repo` for public only.
+> Credentials are **never** accepted from the client.
+
+App permissions needed: Contents (read & write), Pull requests (write),
+Administration (write, to create repos), Secrets (write, to set Actions secrets),
+Workflows (write, to commit `.github/workflows`), Metadata (read).
+
+> **Limitation:** installation tokens can't create repos under a *user* account —
+> only in organizations. Auto-creating a repo for a user owner returns 422.
 
 > **Local dev:** the Secret Manager client uses Application Default Credentials —
-> run `gcloud auth application-default login` first, or the lookup returns nothing
-> and calls fall back to unauthenticated.
+> run `gcloud auth application-default login` first.
 
 ## Endpoints
 
@@ -153,8 +161,8 @@ Federation. The WIF config is read from per-owner Secret Manager secrets
 > resources. If `wif_secrets_set` is `false`, see `wif_secrets_error`.
 
 > The plan-on-PR workflow runs because the branch push and PR are made with the
-> owner's **PAT** (a push using the built-in `GITHUB_TOKEN` would not trigger it).
-> The PAT therefore needs `repo` scope, and the repo/org must allow Actions to
+> App **installation token** (a push using the built-in `GITHUB_TOKEN` would not trigger it).
+> The App therefore needs the permissions above, and the repo/org must allow Actions to
 > have `pull-requests: write` for the plan comment to post.
 
 > **Terraform state:** the plan workflow uses the **local backend**
@@ -167,10 +175,10 @@ Federation. The WIF config is read from per-owner Secret Manager secrets
 
 > **Private Terraform modules:** `terraform init` clones module sources from
 > github.com. The built-in `GITHUB_TOKEN` can't read *other* private repos, so on
-> repo creation the owner's PAT is injected as a `GH_MODULES_TOKEN` Actions secret
+> repo creation an installation token is injected as a `GH_MODULES_TOKEN` Actions secret
 > (`modules_secret_set: true`). The workflow's git-auth step uses that secret to
 > authenticate module clones (falling back to `github.token` if it's absent).
-> Setting the secret needs a PAT with `repo` scope and admin on the repo.
+> Installation tokens expire after 1 hour, so this only covers the first run; later runs fall back to `github.token`.
 
 ## Docker
 
@@ -188,8 +196,10 @@ docker run -p 8080:8080 \
 
 | Variable | Description |
 |----------|-------------|
-| `SECRET_PROJECT` | GCP project holding the per-owner `{owner}_token` secrets (default: `idp-poc-495014`) |
-| `TOKEN_CACHE_TTL` | Seconds a resolved token is cached in memory before re-reading Secret Manager (default: `300`; `0` disables) |
+| `SECRET_PROJECT` | GCP project holding the App key / config secrets (default: `idp-poc-495014`) |
+| `GITHUB_APP_ID` | GitHub App ID (default: `5145695`) |
+| `GITHUB_APP_KEY_SECRET` | Secret Manager secret with the App private key (default: `github_app_private_key`) |
+| `GITHUB_APP_PRIVATE_KEY` | Local-dev fallback PEM when the secret is unavailable |
 
 #added github variables for 
 CATALOG_OWNER=rjones-projects
