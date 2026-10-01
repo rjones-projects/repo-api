@@ -180,6 +180,28 @@ Federation. The WIF config is read from per-owner Secret Manager secrets
 > authenticate module clones (falling back to `github.token` if it's absent).
 > Installation tokens expire after 1 hour, so this only covers the first run; later runs fall back to `github.token`.
 
+### Merge
+
+#### `POST /repos/{owner}/{repo}/pulls/{pull_number}/merge`
+
+Merges a pull request. The body is optional:
+
+```json
+{ "merge_method": "squash", "commit_title": "Add compute module", "commit_message": "", "sha": "<expected PR head sha>" }
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `merge_method` | `merge` \| `squash` \| `rebase` | `merge` | How to merge |
+| `commit_title` | string | – | Merge commit title (merge/squash) |
+| `commit_message` | string | – | Merge commit body (merge/squash) |
+| `sha` | string | – | Only merge if the PR head still matches this SHA (else 409) |
+
+Response: `{"repo": "owner/repo", "pull_number": 1, "merged": true, "merge_commit_sha": "...", "message": "Pull Request successfully merged"}`.
+GitHub's refusals pass through with their status: 405 when not mergeable (failing
+required checks, conflicts, branch protection), 409 on a `sha` mismatch. Needs the
+App's **Pull requests: write** permission.
+
 ## Docker
 
 ```bash

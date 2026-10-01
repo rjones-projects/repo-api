@@ -8,7 +8,7 @@ import os
 import time
 import yaml
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -82,6 +82,21 @@ class CommitResponse(BaseModel):
     modules_secret_error: Optional[str] = None
     wif_secrets_set: bool = False
     wif_secrets_error: Optional[str] = None
+
+
+class MergeRequest(BaseModel):
+    merge_method: Literal["merge", "squash", "rebase"] = Field("merge", description="How to merge the PR")
+    commit_title: Optional[str] = Field(None, description="Title for the merge commit (merge/squash only)")
+    commit_message: Optional[str] = Field(None, description="Extra detail for the merge commit (merge/squash only)")
+    sha: Optional[str] = Field(None, description="If set, the merge only succeeds when the PR head matches this SHA")
+
+
+class MergeResponse(BaseModel):
+    repo: str
+    pull_number: int
+    merged: bool
+    merge_commit_sha: Optional[str] = None
+    message: str
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -724,4 +739,39 @@ def commit_files(
         branch=branch,
         commit_sha=commit_sha,
         files_committed=sorted(files),
+    )
+
+
+# ── Merge endpoint ───────────────────────────────────────────────────────────
+
+@app.post(
+    "/repos/{owner}/{repo}/pulls/{pull_number}/merge",
+    response_model=MergeResponse,
+    summary="Merge a pull request",
+    responses={
+        404: {"description": "Repo or pull request not found"},
+        405: {"description": "Pull request is not mergeable (checks, conflicts, or branch protection)"},
+        409: {"description": "`sha` was given and the PR head has moved"},
+    },
+)
+def merge_pull_request(
+    owner: str,
+    repo: str,
+    pull_number: int,
+    request: MergeRequest = MergeRequest(),
+    gh: GhApi = Depends(get_github_client),
+):
+    """Merge a pull request using `merge`, `squash` or `rebase` (default `merge`)."""
+    kwargs = {k: v for k, v in request.model_dump().items() if v is not None}
+    try:
+        result = gh.pulls.merge(owner=owner, repo=repo, pull_number=pull_number, **kwargs)
+    except HTTP4xxClientError as exc:
+        raise _github_error(exc)
+
+    return MergeResponse(
+        repo=f"{owner}/{repo}",
+        pull_number=pull_number,
+        merged=bool(result.merged),
+        merge_commit_sha=result.sha,
+        message=result.message,
     )
