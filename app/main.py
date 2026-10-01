@@ -116,7 +116,7 @@ def _fetch_installation_token(owner: str) -> tuple[Optional[str], float]:
     app_jwt = _app_jwt()
     if not app_jwt:
         return None, time.time() + _NEGATIVE_CACHE_TTL
-    app_gh = GhApi(token=app_jwt)
+    app_gh = GhApi(jwt_token=app_jwt)  # JWTs need "Bearer"; token= would send "token <jwt>"
     try:
         installation = app_gh.apps.get_user_installation(username=owner)  # works for users and orgs
         result = app_gh.apps.create_installation_access_token(installation_id=installation.id)
