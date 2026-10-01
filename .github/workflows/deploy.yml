@@ -55,3 +55,5 @@ jobs:
           flags: --allow-unauthenticated
           env_vars: |
             SECRET_PROJECT=${{ env.PROJECT_ID }}
+            GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
+            GITHUB_APP_CLIENT_ID=${{ secrets.GH_APP_CLIENT_ID }}

@@ -32,8 +32,10 @@ app = FastAPI(
 # GCP project that stores the GitHub App private key and per-owner config secrets.
 SECRET_PROJECT = os.getenv("SECRET_PROJECT", "idp-poc-495014")
 
-# GitHub App used to authenticate to GitHub (owned by rjones-projects).
-GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "5145695")
+# GitHub App used to authenticate to GitHub (owned by rjones-projects). The IDs come
+# from env vars, which the deploy workflow sets from GitHub Actions secrets.
+GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
+GITHUB_APP_CLIENT_ID = os.getenv("GITHUB_APP_CLIENT_ID", "")
 # Secret Manager secret holding the App's PEM private key (env var is a local-dev fallback).
 GITHUB_APP_KEY_SECRET = os.getenv("GITHUB_APP_KEY_SECRET", "github_app_private_key")
 
@@ -97,11 +99,12 @@ def _app_private_key() -> Optional[str]:
 def _app_jwt() -> Optional[str]:
     """Short-lived JWT identifying the App itself (used to mint installation tokens)."""
     key = _app_private_key()
-    if not key:
+    issuer = GITHUB_APP_CLIENT_ID or GITHUB_APP_ID  # GitHub recommends the client ID as `iss`
+    if not key or not issuer:
         return None
     now = int(time.time())
     # iat backdated 60s to tolerate clock drift; GitHub allows at most 10 minutes of validity.
-    return jwt.encode({"iat": now - 60, "exp": now + 540, "iss": GITHUB_APP_ID}, key, algorithm="RS256")
+    return jwt.encode({"iat": now - 60, "exp": now + 540, "iss": issuer}, key, algorithm="RS256")
 
 
 def _fetch_installation_token(owner: str) -> tuple[Optional[str], float]:
