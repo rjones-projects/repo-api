@@ -52,8 +52,9 @@ jobs:
           service: ${{ env.SERVICE }}
           region: ${{ env.REGION }}
           image: ${{ env.IMAGE }}:${{ github.sha }}
-          flags: --allow-unauthenticated
+          flags: --no-allow-unauthenticated
           env_vars: |
             SECRET_PROJECT=${{ env.PROJECT_ID }}
+            ALLOWED_OWNERS=microservicesolutions;rjones-projects
             GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
             GITHUB_APP_CLIENT_ID=${{ secrets.GH_APP_CLIENT_ID }}

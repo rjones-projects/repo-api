@@ -12,7 +12,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-Interactive docs: http://localhost:8080/docs
+Interactive docs (local only, set `ENABLE_DOCS=true`): http://localhost:8080/docs
 
 ## Authentication
 
@@ -41,6 +41,15 @@ Workflows (write, to commit `.github/workflows`), Metadata (read).
 
 > **Local dev:** the Secret Manager client uses Application Default Credentials —
 > run `gcloud auth application-default login` first.
+
+## Security
+
+- **Cloud Run IAM:** the service is deployed with `--no-allow-unauthenticated`, so callers
+  must send a Google identity token (`Authorization: Bearer $(gcloud auth print-identity-token)`)
+  and hold `roles/run.invoker` on the service.
+- **Owner allowlist:** `ALLOWED_OWNERS` (semicolon/comma separated) limits which GitHub
+  owners `/repos/{owner}/...` may touch; others get 403. Unset means everything is rejected.
+- **Docs off by default:** `/docs`, `/redoc` and `/openapi.json` need `ENABLE_DOCS=true`.
 
 ## Endpoints
 
@@ -218,6 +227,8 @@ docker run -p 8080:8080 \
 
 | Variable | Description |
 |----------|-------------|
+| `ALLOWED_OWNERS` | GitHub owners the API may act on, e.g. `microservicesolutions;rjones-projects` (required; empty rejects all) |
+| `ENABLE_DOCS` | `true` to serve `/docs` and `/openapi.json` (default: off) |
 | `SECRET_PROJECT` | GCP project holding the App key / config secrets (default: `idp-poc-495014`) |
 | `GITHUB_APP_ID` | GitHub App ID (`5146247`); set by the deploy workflow from the `GH_APP_ID` Actions secret |
 | `GITHUB_APP_CLIENT_ID` | GitHub App Client ID (`Iv23li6by46X2HFVrY6l`); set from the `GH_APP_CLIENT_ID` Actions secret |

@@ -5,6 +5,7 @@ GitHub File API — fetch files and commit changes to GitHub repos.
 import base64
 import json
 import os
+import re
 import time
 import yaml
 from datetime import datetime, timezone
@@ -23,11 +24,21 @@ from google.api_core.exceptions import GoogleAPIError
 from nacl import encoding, public
 from pydantic import BaseModel, Field
 
+# Interactive docs and the OpenAPI schema are off unless ENABLE_DOCS=true (local dev).
+ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
+
 app = FastAPI(
     title="Repo API",
     description="Fetch files from GitHub repositories and commit changes",
     version="2.1.0",
+    docs_url="/docs" if ENABLE_DOCS else None,
+    redoc_url="/redoc" if ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
+
+# GitHub owners (users/orgs) this API may act on, separated by commas, semicolons or
+# whitespace. Fails closed: when unset or empty, every owner is rejected.
+ALLOWED_OWNERS = {o.lower() for o in re.split(r"[,;\s]+", os.getenv("ALLOWED_OWNERS", "")) if o}
 
 # GCP project that stores the GitHub App private key and per-owner config secrets.
 SECRET_PROJECT = os.getenv("SECRET_PROJECT", "idp-poc-495014")
@@ -173,8 +184,11 @@ def get_github_client(owner: str) -> GhApi:
     """Authenticate as the GitHub App installation on '<owner>'.
 
     `owner` is bound to the {owner} path parameter of each route. When the App
-    isn't installed on the owner, GitHub calls are made unauthenticated.
+    isn't installed on the owner, GitHub calls are made unauthenticated. Owners
+    outside ALLOWED_OWNERS are rejected with 403 before any GitHub call is made.
     """
+    if owner.lower() not in ALLOWED_OWNERS:
+        raise HTTPException(status_code=403, detail=f"Owner '{owner}' is not allowed")
     token = _resolve_owner_token(owner)
     # authenticate=False stops ghapi falling back to a stray GITHUB_TOKEN env var.
     return GhApi(token=token) if token else GhApi(authenticate=False)
@@ -258,7 +272,7 @@ def _github_error(exc: HTTP4xxClientError, default_status: int = 404) -> HTTPExc
 
 @app.get("/", include_in_schema=False)
 def root():
-    return {"message": "Repo API — visit /docs for usage"}
+    return {"message": "Repo API"}
 
 
 @app.get("/health")
